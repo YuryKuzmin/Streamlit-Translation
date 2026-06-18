@@ -272,7 +272,7 @@ def first_n_words(text: str, n: int = 200) -> str:
     return " ".join(words[:n]).strip() + " …"
 
 
-st.set_page_config(page_title="Translation Stub", layout="wide")
+st.set_page_config(page_title="Translation App", layout="wide")
 init_db()
 
 st.title("Translation Stub")
@@ -409,6 +409,6 @@ else:
 
 st.divider()
 st.caption(
-    "For reliable token accounting, use the provider-reported usage fields when available. "
-    "OpenAI Responses includes a usage object with input_tokens and output_tokens, and Anthropic message responses return input_tokens and output_tokens in usage."
+    ""
+    ""
 )
