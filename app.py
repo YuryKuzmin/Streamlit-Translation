@@ -14,7 +14,7 @@ Optional (for local token counting fallback):
 Secrets expected (Streamlit secrets or environment variables):
   OPENAI_API_KEY
   ANTHROPIC_API_KEY
-  GOOGLE_SERVICE_ACCOUNT_JSON  # JSON string for a service account
+  GOOGLE_SERVICE_ACCOUNT_JSON
 
 Notes:
 - The Google Doc prompt and input fields expect public/viewable docs for simple fetches.
@@ -22,6 +22,17 @@ Notes:
 - Token totals are stored in a local SQLite file next to the app.
 """
 
+from __future__ import annotations
+
+import json
+import os
+import re
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional, Tuple
+
+import requests
 import streamlit as st
 
 
@@ -53,18 +64,6 @@ def check_password():
 if not check_password():
     st.stop()
 
-from __future__ import annotations
-
-import json
-import os
-import re
-import sqlite3
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional, Tuple
-
-import requests
-import streamlit as st
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = APP_DIR / "token_usage.sqlite3"
