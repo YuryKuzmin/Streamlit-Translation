@@ -22,6 +22,37 @@ Notes:
 - Token totals are stored in a local SQLite file next to the app.
 """
 
+import streamlit as st
+
+
+def check_password():
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    if st.session_state.authenticated:
+        return True
+
+    st.title("Login")
+
+    username = st.text_input("Email")
+    password = st.text_input("Password", type="password")
+
+    if st.button("Log in"):
+        if (
+            username == st.secrets["APP_USERNAME"]
+            and password == st.secrets["APP_PASSWORD"]
+        ):
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Invalid login or password")
+
+    return False
+
+
+if not check_password():
+    st.stop()
+
 from __future__ import annotations
 
 import json
