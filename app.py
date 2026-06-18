@@ -75,8 +75,8 @@ ADVANCED_PROMPT_SOURCE = (
 LANGUAGES = ["Russian"]
 
 MODEL_CHOICES = {
-    "Claude Sonnet": {"provider": "anthropic", "model": "claude-sonnet-4.6"},
-    "Claude Opus": {"provider": "anthropic", "model": "claude-opus-4.8"},
+    "Claude Sonnet": {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+    "Claude Opus": {"provider": "anthropic", "model": "claude-opus-4-8"},
     "GPT": {"provider": "openai", "model": "gpt-5.5"},
 }
 
