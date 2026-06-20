@@ -230,7 +230,7 @@ def call_model(provider: str, model: str, prompt: str, user_text: str) -> Tuple[
     
     MAX_OUTPUT_LIMIT = 30000
 
-   if provider == "anthropic":
+    if provider == "anthropic":
         client = get_anthropic_client()
         
         # Use the streaming context manager to keep the connection alive
