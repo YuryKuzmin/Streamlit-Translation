@@ -14,10 +14,6 @@ Secrets expected (Streamlit secrets or environment variables):
   ANTHROPIC_API_KEY
   APP_USERNAME
   APP_PASSWORD
-
-Notes:
-- The Google Doc prompt and input fields expect public/viewable docs for simple fetches.
-- Token totals are stored in a local SQLite file next to the app.
 """
 
 from __future__ import annotations
@@ -26,6 +22,7 @@ import os
 import re
 import sqlite3
 import time
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
@@ -123,10 +120,8 @@ def get_total_tokens_all_time() -> int:
 
 
 def get_token_count_fallback(text: str) -> int:
-    """Rough fallback when provider usage is unavailable."""
     try:
         import tiktoken  # type: ignore
-
         enc = tiktoken.get_encoding("o200k_base")
         return len(enc.encode(text))
     except Exception:
@@ -142,7 +137,6 @@ def extract_google_doc_id(url: str) -> Optional[str]:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_public_google_doc_text(url: str) -> str:
-    """Fetch plain text from a public Google Doc."""
     doc_id = extract_google_doc_id(url)
     if not doc_id:
         raise ValueError("Could not find a Google Doc ID in the link.")
@@ -156,18 +150,14 @@ def fetch_public_google_doc_text(url: str) -> str:
 def resolve_prompt(prompt_mode: str, language: str, prompt_doc_url: str, custom_prompt: str) -> str:
     if prompt_mode == "Simple prompt":
         return f"Translate the following into {language}"
-
     if prompt_mode == "Advanced prompt":
         prompt_text = fetch_public_google_doc_text(ADVANCED_PROMPT_SOURCE)
         return prompt_text.replace("$LANGUAGE", language)
-
     if prompt_mode == "Google Doc":
         prompt_text = fetch_public_google_doc_text(prompt_doc_url)
         return prompt_text.replace("$LANGUAGE", language)
-
     if prompt_mode == "Custom prompt":
         return custom_prompt.strip().replace("$LANGUAGE", language)
-
     raise ValueError("Unknown prompt mode.")
 
 
@@ -179,26 +169,7 @@ def resolve_input(input_mode: str, pasted_text: str, input_doc_url: str) -> str:
     raise ValueError("Unknown input mode.")
 
 
-def get_anthropic_client():
-    from anthropic import Anthropic  # type: ignore
-
-    api_key = st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing ANTHROPIC_API_KEY.")
-    return Anthropic(api_key=api_key)
-
-
-def get_openai_client():
-    from openai import OpenAI  # type: ignore
-
-    api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("Missing OPENAI_API_KEY.")
-    return OpenAI(api_key=api_key)
-
-
 def chunk_text(text: str, max_words: int = 10000) -> list[str]:
-    """Splits text into chunks of roughly max_words, respecting paragraph breaks."""
     paragraphs = text.split('\n\n')
     chunks = []
     current_chunk = []
@@ -206,7 +177,6 @@ def chunk_text(text: str, max_words: int = 10000) -> list[str]:
 
     for p in paragraphs:
         p_word_count = len(p.split())
-        
         if current_word_count + p_word_count > max_words and current_chunk:
             chunks.append('\n\n'.join(current_chunk))
             current_chunk = [p]
@@ -221,11 +191,14 @@ def chunk_text(text: str, max_words: int = 10000) -> list[str]:
     return chunks
 
 
-def call_model(provider: str, model: str, prompt: str, user_text: str) -> Tuple[str, int, int]:
+def call_model(provider: str, model: str, prompt: str, user_text: str, api_key: str) -> Tuple[str, int, int]:
+    """Isolated model call to be completely thread-safe."""
     MAX_OUTPUT_LIMIT = 30000
 
     if provider == "anthropic":
-        client = get_anthropic_client()
+        from anthropic import Anthropic  # type: ignore
+        client = Anthropic(api_key=api_key)
+        
         with client.messages.stream(
             model=model,
             max_tokens=MAX_OUTPUT_LIMIT,
@@ -238,42 +211,66 @@ def call_model(provider: str, model: str, prompt: str, user_text: str) -> Tuple[
         usage = getattr(response, "usage", None)
         input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
         output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-        if not input_tokens:
-            input_tokens = get_token_count_fallback(prompt + "\n" + user_text)
-        if not output_tokens:
-            output_tokens = get_token_count_fallback(output_text)
+        
+        if not input_tokens: input_tokens = get_token_count_fallback(prompt + "\n" + user_text)
+        if not output_tokens: output_tokens = get_token_count_fallback(output_text)
+        
         return output_text.strip(), input_tokens, output_tokens
 
     if provider == "openai":
-        client = get_openai_client()
+        from openai import OpenAI  # type: ignore
+        client = OpenAI(api_key=api_key)
+        
         response = client.responses.create(
             model=model,
             instructions=prompt,
             input=user_text,
             max_output_tokens=MAX_OUTPUT_LIMIT,
         )
+        
         output_text = getattr(response, "output_text", None)
         if not output_text:
             output_parts = []
             for item in getattr(response, "output", []) or []:
                 for content in getattr(item, "content", []) or []:
                     text = getattr(content, "text", None)
-                    if text:
-                        output_parts.append(text)
+                    if text: output_parts.append(text)
             output_text = "".join(output_parts)
 
         usage = getattr(response, "usage", None)
         input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
         output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-        if not input_tokens:
-            input_tokens = get_token_count_fallback(prompt + "\n" + user_text)
-        if not output_tokens:
-            output_tokens = get_token_count_fallback(output_text)
+        
+        if not input_tokens: input_tokens = get_token_count_fallback(prompt + "\n" + user_text)
+        if not output_tokens: output_tokens = get_token_count_fallback(output_text)
+        
         return output_text.strip(), input_tokens, output_tokens
 
     raise ValueError(f"Unsupported provider: {provider}")
 
 
+# --- Thread Class for Non-Blocking API Calls ---
+class TranslationThread(threading.Thread):
+    def __init__(self, provider, model, prompt, user_text, api_key):
+        super().__init__()
+        self.provider = provider
+        self.model = model
+        self.prompt = prompt
+        self.user_text = user_text
+        self.api_key = api_key
+        self.result = None
+        self.exception = None
+
+    def run(self):
+        try:
+            self.result = call_model(
+                self.provider, self.model, self.prompt, self.user_text, self.api_key
+            )
+        except Exception as e:
+            self.exception = e
+
+
+# --- Main UI ---
 st.set_page_config(page_title="Translation App", layout="wide")
 init_db()
 
@@ -323,10 +320,8 @@ if input_mode == "Paste text":
         height=240,
         placeholder="Paste the text to translate here.",
     )
-    
     if len(pasted_text.split()) > 3000:
         st.warning("You are about to translate a very large document.")
-        
 else:
     input_doc_url = st.text_input(
         "Google Doc link for input text",
@@ -334,7 +329,6 @@ else:
         help="Make sure the Google Doc is set to View for everyone.",
     )
 
-# Manage translation state so button can be grayed out
 if "is_translating" not in st.session_state:
     st.session_state.is_translating = False
 
@@ -367,10 +361,10 @@ if st.session_state.is_translating:
             total_input_tokens = 0
             total_output_tokens = 0
 
-            # ---------------------------------------------------------
-            # PROGRESS BAR & ETA ESTIMATION
-            # ---------------------------------------------------------
-            # Rough proxy variables for estimated processing speeds (tokens/sec)
+            # Pull API keys natively so we can pass them cleanly into the thread
+            anthropic_key = st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+            openai_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+
             model_speeds = {
                 "claude-sonnet-4-6": 45.0,
                 "claude-opus-4-8": 15.0,
@@ -379,34 +373,44 @@ if st.session_state.is_translating:
             avg_speed = model_speeds.get(model_info["model"], 30.0)
             
             est_words = len(input_text.split())
-            # Rough math: Words * 1.3 (Input Tokens) + Words * 1.5 (Output tokens translation expansion)
             est_total_tokens = est_words * 2.8 
-            est_total_seconds = est_total_tokens / avg_speed
+            est_total_seconds = max(5.0, est_total_tokens / avg_speed) # Floor it at 5 seconds
 
-            progress_text = f"Translating document (0/{len(chunks)} chunks)... Estimated time: ~{int(est_total_seconds)}s"
-            progress_bar = st.progress(0, text=progress_text)
-
+            progress_bar = st.progress(0, text=f"Translating document (0/{len(chunks)} chunks)... Estimated time: ~{int(est_total_seconds)}s")
             start_time = time.time()
 
             for i, chunk in enumerate(chunks):
-                # Update ETA dynamically based on chunks left
-                elapsed = time.time() - start_time
-                chunks_left = len(chunks) - i
-                
-                if i > 0:
-                    avg_time_per_chunk = elapsed / i
-                    current_eta = int(avg_time_per_chunk * chunks_left)
-                else:
-                    current_eta = int(est_total_seconds)
+                active_api_key = anthropic_key if model_info["provider"] == "anthropic" else openai_key
+                if not active_api_key:
+                    raise RuntimeError(f"Missing API key for {model_info['provider']}.")
 
-                progress_bar.progress(i / len(chunks), text=f"Translating chunk {i+1} of {len(chunks)}... (ETA: ~{current_eta}s)")
+                # Start the background thread
+                t = TranslationThread(model_info["provider"], model_info["model"], prompt_text, chunk, active_api_key)
+                t.start()
                 
-                chunk_output, in_tokens, out_tokens = call_model(
-                    model_info["provider"],
-                    model_info["model"],
-                    prompt_text,
-                    chunk,
-                )
+                chunk_start_time = time.time()
+                chunk_est_seconds = est_total_seconds / len(chunks)
+
+                # Keep the UI alive and progressively update the bar while waiting for the thread
+                while t.is_alive():
+                    elapsed = time.time() - chunk_start_time
+                    chunk_progress = min(elapsed / chunk_est_seconds, 0.95) # Cap at 95% until thread finishes
+                    
+                    overall_progress = (i + chunk_progress) / len(chunks)
+                    overall_progress = min(overall_progress, 1.0) # Prevent going over 100%
+                    
+                    remaining_overall = max(0, int(est_total_seconds - (time.time() - start_time)))
+                    
+                    progress_bar.progress(overall_progress, text=f"Translating chunk {i+1} of {len(chunks)}... (ETA: ~{remaining_overall}s)")
+                    time.sleep(0.2) # Briefly pause loop to allow Streamlit to flush UI updates
+
+                t.join()
+                
+                # If the thread failed, crash gracefully
+                if t.exception:
+                    raise t.exception
+
+                chunk_output, in_tokens, out_tokens = t.result
                 
                 full_output_text += chunk_output + "\n\n"
                 total_input_tokens += in_tokens
@@ -436,7 +440,6 @@ if st.session_state.is_translating:
     except Exception as exc:
         st.error(str(exc))
     finally:
-        # Reset translating state and refresh UI to re-enable button
         st.session_state.is_translating = False
         st.rerun()
 
@@ -444,10 +447,14 @@ if "last_output" in st.session_state:
     st.divider()
     st.subheader("Output")
     
-    st.caption("Use the 'Copy' icon in the top right corner of the block below to copy the translation.")
-    
-    # st.code natively provides a nice "copy to clipboard" button
-    st.code(st.session_state["last_output"], language=None)
+    # Text Area fixes the horizontal scrolling / lack of linebreaks natively. 
+    st.text_area(
+        label="Translated Document",
+        value=st.session_state["last_output"],
+        height=500,
+        disabled=False,
+        help="Click inside and press Ctrl+A (Cmd+A on Mac), then Ctrl+C to copy all text."
+    )
 
     col1, col2 = st.columns([1, 4])
     with col1:
