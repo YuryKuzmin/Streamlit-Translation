@@ -192,7 +192,6 @@ def chunk_text(text: str, max_words: int = 10000) -> list[str]:
 
 
 def call_model(provider: str, model: str, prompt: str, user_text: str, api_key: str) -> Tuple[str, int, int]:
-    """Isolated model call to be completely thread-safe."""
     MAX_OUTPUT_LIMIT = 30000
 
     if provider == "anthropic":
@@ -249,7 +248,6 @@ def call_model(provider: str, model: str, prompt: str, user_text: str, api_key: 
     raise ValueError(f"Unsupported provider: {provider}")
 
 
-# --- Thread Class for Non-Blocking API Calls ---
 class TranslationThread(threading.Thread):
     def __init__(self, provider, model, prompt, user_text, api_key):
         super().__init__()
@@ -343,7 +341,6 @@ st.button(
     on_click=start_translation
 )
 
-# Run translation logic if button activated
 if st.session_state.is_translating:
     try:
         prompt_text = resolve_prompt(prompt_mode, language, prompt_doc_url, custom_prompt)
@@ -361,7 +358,6 @@ if st.session_state.is_translating:
             total_input_tokens = 0
             total_output_tokens = 0
 
-            # Pull API keys natively so we can pass them cleanly into the thread
             anthropic_key = st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
             openai_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 
@@ -374,7 +370,7 @@ if st.session_state.is_translating:
             
             est_words = len(input_text.split())
             est_total_tokens = est_words * 2.8 
-            est_total_seconds = max(5.0, est_total_tokens / avg_speed) # Floor it at 5 seconds
+            est_total_seconds = max(5.0, est_total_tokens / avg_speed)
 
             progress_bar = st.progress(0, text=f"Translating document (0/{len(chunks)} chunks)... Estimated time: ~{int(est_total_seconds)}s")
             start_time = time.time()
@@ -384,29 +380,26 @@ if st.session_state.is_translating:
                 if not active_api_key:
                     raise RuntimeError(f"Missing API key for {model_info['provider']}.")
 
-                # Start the background thread
                 t = TranslationThread(model_info["provider"], model_info["model"], prompt_text, chunk, active_api_key)
                 t.start()
                 
                 chunk_start_time = time.time()
                 chunk_est_seconds = est_total_seconds / len(chunks)
 
-                # Keep the UI alive and progressively update the bar while waiting for the thread
                 while t.is_alive():
                     elapsed = time.time() - chunk_start_time
-                    chunk_progress = min(elapsed / chunk_est_seconds, 0.95) # Cap at 95% until thread finishes
+                    chunk_progress = min(elapsed / chunk_est_seconds, 0.95)
                     
                     overall_progress = (i + chunk_progress) / len(chunks)
-                    overall_progress = min(overall_progress, 1.0) # Prevent going over 100%
+                    overall_progress = min(overall_progress, 1.0)
                     
                     remaining_overall = max(0, int(est_total_seconds - (time.time() - start_time)))
                     
                     progress_bar.progress(overall_progress, text=f"Translating chunk {i+1} of {len(chunks)}... (ETA: ~{remaining_overall}s)")
-                    time.sleep(0.2) # Briefly pause loop to allow Streamlit to flush UI updates
+                    time.sleep(0.2)
 
                 t.join()
                 
-                # If the thread failed, crash gracefully
                 if t.exception:
                     raise t.exception
 
@@ -436,6 +429,7 @@ if st.session_state.is_translating:
             st.session_state["last_model_label"] = model_label
             st.session_state["last_model_name"] = model_info["model"]
             st.session_state["last_provider"] = model_info["provider"]
+            st.session_state["last_chunk_count"] = len(chunks)
             
     except Exception as exc:
         st.error(str(exc))
@@ -447,7 +441,6 @@ if "last_output" in st.session_state:
     st.divider()
     st.subheader("Output")
     
-    # Text Area fixes the horizontal scrolling / lack of linebreaks natively. 
     st.text_area(
         label="Translated Document",
         value=st.session_state["last_output"],
@@ -466,6 +459,11 @@ if "last_output" in st.session_state:
             use_container_width=True,
         )
 
+    # Expanded stats block containing all requested info
+    st.caption(
+        f"**Model used:** {st.session_state['last_model_label']} ({st.session_state['last_model_name']}) | "
+        f"**Chunks processed:** {st.session_state.get('last_chunk_count', 1)}"
+    )
     st.caption(
         f"This run used about {st.session_state['last_input_tokens'] + st.session_state['last_output_tokens']} tokens "
         f"({st.session_state['last_input_tokens']} input + {st.session_state['last_output_tokens']} output)."
