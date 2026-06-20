@@ -200,7 +200,7 @@ def get_openai_client():
     return OpenAI(api_key=api_key)
 
 
-def chunk_text(text: str, max_words: int = 2500) -> list[str]:
+def chunk_text(text: str, max_words: int = 10000) -> list[str]:
     """Splits text into chunks of roughly max_words, respecting paragraph breaks."""
     paragraphs = text.split('\n\n')
     chunks = []
@@ -228,7 +228,7 @@ def chunk_text(text: str, max_words: int = 2500) -> list[str]:
 def call_model(provider: str, model: str, prompt: str, user_text: str) -> Tuple[str, int, int]:
     """Return (output_text, input_tokens, output_tokens)."""
     
-    MAX_OUTPUT_LIMIT = 4096
+    MAX_OUTPUT_LIMIT = 30000
 
     if provider == "anthropic":
         client = get_anthropic_client()
@@ -405,7 +405,7 @@ if translate_clicked:
             if len(input_text.split()) > 3000 and input_mode == "Google Doc":
                 st.warning("You are about to translate a very large document.")
 
-            chunks = chunk_text(input_text, max_words=2500)
+            chunks = chunk_text(input_text, max_words=10000)
             
             full_output_text = ""
             total_input_tokens = 0
