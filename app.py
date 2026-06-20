@@ -230,14 +230,19 @@ def call_model(provider: str, model: str, prompt: str, user_text: str) -> Tuple[
     
     MAX_OUTPUT_LIMIT = 30000
 
-    if provider == "anthropic":
+   if provider == "anthropic":
         client = get_anthropic_client()
-        response = client.messages.create(
+        
+        # Use the streaming context manager to keep the connection alive
+        with client.messages.stream(
             model=model,
             max_tokens=MAX_OUTPUT_LIMIT,
             system=prompt,
             messages=[{"role": "user", "content": user_text}],
-        )
+        ) as stream:
+            # Wait for the stream to finish and grab the fully compiled message
+            response = stream.get_final_message()
+
         output_text = "".join(block.text for block in response.content if getattr(block, "type", None) == "text")
         usage = getattr(response, "usage", None)
         input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
