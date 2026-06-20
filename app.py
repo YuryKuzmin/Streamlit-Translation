@@ -200,13 +200,41 @@ def get_openai_client():
     return OpenAI(api_key=api_key)
 
 
+def chunk_text(text: str, max_words: int = 2500) -> list[str]:
+    """Splits text into chunks of roughly max_words, respecting paragraph breaks."""
+    paragraphs = text.split('\n\n')
+    chunks = []
+    current_chunk = []
+    current_word_count = 0
+
+    for p in paragraphs:
+        p_word_count = len(p.split())
+        
+        # If a single paragraph pushes us over the limit, save the current chunk and start a new one
+        if current_word_count + p_word_count > max_words and current_chunk:
+            chunks.append('\n\n'.join(current_chunk))
+            current_chunk = [p]
+            current_word_count = p_word_count
+        else:
+            current_chunk.append(p)
+            current_word_count += p_word_count
+
+    if current_chunk:
+        chunks.append('\n\n'.join(current_chunk))
+        
+    return chunks
+
+
 def call_model(provider: str, model: str, prompt: str, user_text: str) -> Tuple[str, int, int]:
     """Return (output_text, input_tokens, output_tokens)."""
+    
+    MAX_OUTPUT_LIMIT = 4096
+
     if provider == "anthropic":
         client = get_anthropic_client()
         response = client.messages.create(
             model=model,
-            max_tokens=1024,
+            max_tokens=MAX_OUTPUT_LIMIT,
             system=prompt,
             messages=[{"role": "user", "content": user_text}],
         )
@@ -226,7 +254,7 @@ def call_model(provider: str, model: str, prompt: str, user_text: str) -> Tuple[
             model=model,
             instructions=prompt,
             input=user_text,
-            max_output_tokens=1024,
+            max_output_tokens=MAX_OUTPUT_LIMIT,
         )
         output_text = getattr(response, "output_text", None)
         if not output_text:
@@ -351,6 +379,11 @@ if input_mode == "Paste text":
         height=240,
         placeholder="Paste the text to translate here.",
     )
+    
+    # Dynamic warning if user pastes a massive block of text
+    if len(pasted_text.split()) > 3000:
+        st.warning("You are about to translate a very large document.")
+        
 else:
     input_doc_url = st.text_input(
         "Google Doc link for input text",
@@ -368,32 +401,54 @@ if translate_clicked:
         if not input_text:
             st.error("Input text is empty.")
         else:
-            with st.spinner("Translating..."):
-                output_text, input_tokens, output_tokens = call_model(
+            # Secondary check in case the massive text came from a Google Doc fetch
+            if len(input_text.split()) > 3000 and input_mode == "Google Doc":
+                st.warning("You are about to translate a very large document.")
+
+            chunks = chunk_text(input_text, max_words=2500)
+            
+            full_output_text = ""
+            total_input_tokens = 0
+            total_output_tokens = 0
+
+            progress_text = f"Translating document (0/{len(chunks)} chunks)..."
+            progress_bar = st.progress(0, text=progress_text)
+
+            for i, chunk in enumerate(chunks):
+                progress_bar.progress(i / len(chunks), text=f"Translating chunk {i+1} of {len(chunks)}...")
+                
+                chunk_output, in_tokens, out_tokens = call_model(
                     model_info["provider"],
                     model_info["model"],
                     prompt_text,
-                    input_text,
+                    chunk,
                 )
+                
+                full_output_text += chunk_output + "\n\n"
+                total_input_tokens += in_tokens
+                total_output_tokens += out_tokens
+
+            progress_bar.progress(1.0, text="Translation complete!")
 
             total_tokens = save_operation(
                 model_info["provider"],
                 model_info["model"],
-                input_tokens,
-                output_tokens,
+                total_input_tokens,
+                total_output_tokens,
             )
             all_time_tokens = get_total_tokens_all_time()
 
-            st.session_state["last_output"] = output_text
+            st.session_state["last_output"] = full_output_text.strip()
             st.session_state["last_prompt"] = prompt_text
             st.session_state["last_input"] = input_text
-            st.session_state["last_input_tokens"] = input_tokens
-            st.session_state["last_output_tokens"] = output_tokens
+            st.session_state["last_input_tokens"] = total_input_tokens
+            st.session_state["last_output_tokens"] = total_output_tokens
             st.session_state["last_total_tokens"] = total_tokens
             st.session_state["last_all_time_tokens"] = all_time_tokens
             st.session_state["last_model_label"] = model_label
             st.session_state["last_model_name"] = model_info["model"]
             st.session_state["last_provider"] = model_info["provider"]
+            
     except Exception as exc:
         st.error(str(exc))
 
@@ -438,7 +493,4 @@ else:
     st.caption("No translation has been run yet.")
 
 st.divider()
-st.caption(
-    ""
-    ""
-)
+st.caption("")
