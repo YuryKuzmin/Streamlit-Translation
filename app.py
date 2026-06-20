@@ -5,8 +5,6 @@ Required packages:
   requests
   openai
   anthropic
-  google-api-python-client
-  google-auth
 
 Optional (for local token counting fallback):
   tiktoken
@@ -14,20 +12,20 @@ Optional (for local token counting fallback):
 Secrets expected (Streamlit secrets or environment variables):
   OPENAI_API_KEY
   ANTHROPIC_API_KEY
-  GOOGLE_SERVICE_ACCOUNT_JSON
+  APP_USERNAME
+  APP_PASSWORD
 
 Notes:
 - The Google Doc prompt and input fields expect public/viewable docs for simple fetches.
-- Google Docs creation uses the Docs API and inserts plain text into a newly created blank doc.
 - Token totals are stored in a local SQLite file next to the app.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
@@ -132,7 +130,6 @@ def get_token_count_fallback(text: str) -> int:
         enc = tiktoken.get_encoding("o200k_base")
         return len(enc.encode(text))
     except Exception:
-        # Cheap fallback: good enough for a rough estimate.
         return max(1, len(text.split()))
 
 
@@ -210,7 +207,6 @@ def chunk_text(text: str, max_words: int = 10000) -> list[str]:
     for p in paragraphs:
         p_word_count = len(p.split())
         
-        # If a single paragraph pushes us over the limit, save the current chunk and start a new one
         if current_word_count + p_word_count > max_words and current_chunk:
             chunks.append('\n\n'.join(current_chunk))
             current_chunk = [p]
@@ -226,21 +222,16 @@ def chunk_text(text: str, max_words: int = 10000) -> list[str]:
 
 
 def call_model(provider: str, model: str, prompt: str, user_text: str) -> Tuple[str, int, int]:
-    """Return (output_text, input_tokens, output_tokens)."""
-    
     MAX_OUTPUT_LIMIT = 30000
 
     if provider == "anthropic":
         client = get_anthropic_client()
-        
-        # Use the streaming context manager to keep the connection alive
         with client.messages.stream(
             model=model,
             max_tokens=MAX_OUTPUT_LIMIT,
             system=prompt,
             messages=[{"role": "user", "content": user_text}],
         ) as stream:
-            # Wait for the stream to finish and grab the fully compiled message
             response = stream.get_final_message()
 
         output_text = "".join(block.text for block in response.content if getattr(block, "type", None) == "text")
@@ -263,7 +254,6 @@ def call_model(provider: str, model: str, prompt: str, user_text: str) -> Tuple[
         )
         output_text = getattr(response, "output_text", None)
         if not output_text:
-            # Best-effort fallback if SDK shape changes.
             output_parts = []
             for item in getattr(response, "output", []) or []:
                 for content in getattr(item, "content", []) or []:
@@ -282,57 +272,6 @@ def call_model(provider: str, model: str, prompt: str, user_text: str) -> Tuple[
         return output_text.strip(), input_tokens, output_tokens
 
     raise ValueError(f"Unsupported provider: {provider}")
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def create_google_doc_with_text(title: str, text: str) -> str:
-    """Create a Google Doc and insert plain text into it.
-
-    Requires a service account JSON in GOOGLE_SERVICE_ACCOUNT_JSON.
-    """
-    service_json = st.secrets.get("GOOGLE_SERVICE_ACCOUNT_JSON") or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-    if not service_json:
-        raise RuntimeError("Missing GOOGLE_SERVICE_ACCOUNT_JSON.")
-
-    from google.oauth2 import service_account  # type: ignore
-    from googleapiclient.discovery import build  # type: ignore
-
-    info = json.loads(service_json)
-    creds = service_account.Credentials.from_service_account_info(
-        info,
-        scopes=[
-            "https://www.googleapis.com/auth/documents",
-            "https://www.googleapis.com/auth/drive.file",
-        ],
-    )
-
-    docs_service = build("docs", "v1", credentials=creds, cache_discovery=False)
-    created = docs_service.documents().create(body={"title": title}).execute()
-    document_id = created["documentId"]
-
-    # Insert text at the beginning of the blank document.
-    docs_service.documents().batchUpdate(
-        documentId=document_id,
-        body={
-            "requests": [
-                {
-                    "insertText": {
-                        "location": {"index": 1},
-                        "text": text,
-                    }
-                }
-            ]
-        },
-    ).execute()
-
-    return f"https://docs.google.com/document/d/{document_id}/edit"
-
-
-def first_n_words(text: str, n: int = 200) -> str:
-    words = text.split()
-    if len(words) <= n:
-        return text.strip()
-    return " ".join(words[:n]).strip() + " …"
 
 
 st.set_page_config(page_title="Translation App", layout="wide")
@@ -385,7 +324,6 @@ if input_mode == "Paste text":
         placeholder="Paste the text to translate here.",
     )
     
-    # Dynamic warning if user pastes a massive block of text
     if len(pasted_text.split()) > 3000:
         st.warning("You are about to translate a very large document.")
         
@@ -396,9 +334,23 @@ else:
         help="Make sure the Google Doc is set to View for everyone.",
     )
 
-translate_clicked = st.button("Translate", type="primary", use_container_width=False)
+# Manage translation state so button can be grayed out
+if "is_translating" not in st.session_state:
+    st.session_state.is_translating = False
 
-if translate_clicked:
+def start_translation():
+    st.session_state.is_translating = True
+
+st.button(
+    "Translate", 
+    type="primary", 
+    use_container_width=False, 
+    disabled=st.session_state.is_translating,
+    on_click=start_translation
+)
+
+# Run translation logic if button activated
+if st.session_state.is_translating:
     try:
         prompt_text = resolve_prompt(prompt_mode, language, prompt_doc_url, custom_prompt)
         input_text = resolve_input(input_mode, pasted_text, input_doc_url)
@@ -406,7 +358,6 @@ if translate_clicked:
         if not input_text:
             st.error("Input text is empty.")
         else:
-            # Secondary check in case the massive text came from a Google Doc fetch
             if len(input_text.split()) > 3000 and input_mode == "Google Doc":
                 st.warning("You are about to translate a very large document.")
 
@@ -416,11 +367,39 @@ if translate_clicked:
             total_input_tokens = 0
             total_output_tokens = 0
 
-            progress_text = f"Translating document (0/{len(chunks)} chunks)..."
+            # ---------------------------------------------------------
+            # PROGRESS BAR & ETA ESTIMATION
+            # ---------------------------------------------------------
+            # Rough proxy variables for estimated processing speeds (tokens/sec)
+            model_speeds = {
+                "claude-sonnet-4-6": 45.0,
+                "claude-opus-4-8": 15.0,
+                "gpt-5.5": 50.0
+            }
+            avg_speed = model_speeds.get(model_info["model"], 30.0)
+            
+            est_words = len(input_text.split())
+            # Rough math: Words * 1.3 (Input Tokens) + Words * 1.5 (Output tokens translation expansion)
+            est_total_tokens = est_words * 2.8 
+            est_total_seconds = est_total_tokens / avg_speed
+
+            progress_text = f"Translating document (0/{len(chunks)} chunks)... Estimated time: ~{int(est_total_seconds)}s"
             progress_bar = st.progress(0, text=progress_text)
 
+            start_time = time.time()
+
             for i, chunk in enumerate(chunks):
-                progress_bar.progress(i / len(chunks), text=f"Translating chunk {i+1} of {len(chunks)}...")
+                # Update ETA dynamically based on chunks left
+                elapsed = time.time() - start_time
+                chunks_left = len(chunks) - i
+                
+                if i > 0:
+                    avg_time_per_chunk = elapsed / i
+                    current_eta = int(avg_time_per_chunk * chunks_left)
+                else:
+                    current_eta = int(est_total_seconds)
+
+                progress_bar.progress(i / len(chunks), text=f"Translating chunk {i+1} of {len(chunks)}... (ETA: ~{current_eta}s)")
                 
                 chunk_output, in_tokens, out_tokens = call_model(
                     model_info["provider"],
@@ -456,37 +435,29 @@ if translate_clicked:
             
     except Exception as exc:
         st.error(str(exc))
+    finally:
+        # Reset translating state and refresh UI to re-enable button
+        st.session_state.is_translating = False
+        st.rerun()
 
 if "last_output" in st.session_state:
     st.divider()
-    st.subheader("Preview")
+    st.subheader("Output")
+    
+    st.caption("Use the 'Copy' icon in the top right corner of the block below to copy the translation.")
+    
+    # st.code natively provides a nice "copy to clipboard" button
+    st.code(st.session_state["last_output"], language=None)
 
-    preview_text = first_n_words(st.session_state["last_output"], 200)
-    st.code(preview_text, language=None)
-
-    col_copy, col_doc = st.columns([1, 1])
-    with col_copy:
+    col1, col2 = st.columns([1, 4])
+    with col1:
         st.download_button(
-            "Copy as .txt",
+            "Download as txt",
             data=st.session_state["last_output"].encode("utf-8"),
             file_name="translation.txt",
             mime="text/plain",
             use_container_width=True,
         )
-
-    with col_doc:
-        doc_title = st.text_input(
-            "Google Doc title",
-            value=f"Translation {datetime.now().strftime('%Y-%m-%d %H-%M')}",
-            key="doc_title",
-        )
-        if st.button("Create Google Doc with output", use_container_width=True):
-            try:
-                doc_url = create_google_doc_with_text(doc_title, st.session_state["last_output"])
-                st.success("Google Doc created.")
-                st.link_button("Open document", doc_url)
-            except Exception as exc:
-                st.error(str(exc))
 
     st.caption(
         f"This run used about {st.session_state['last_input_tokens'] + st.session_state['last_output_tokens']} tokens "
