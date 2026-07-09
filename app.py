@@ -12,8 +12,7 @@ Optional (for local token counting fallback):
 Secrets expected (Streamlit secrets or environment variables):
   OPENAI_API_KEY
   ANTHROPIC_API_KEY
-  APP_USERNAME
-  APP_PASSWORD
+  APP_PASSWORD   (login now uses this single password; APP_USERNAME is no longer read)
 """
 
 from __future__ import annotations
@@ -40,18 +39,24 @@ def check_password():
 
     st.title("Login")
 
-    username = st.text_input("Email")
-    password = st.text_input("Password", type="password")
+    # Single password field, wrapped in a form so that pressing Enter (or the
+    # "Go"/"Done" key on a mobile keyboard) submits. A plain st.button does not
+    # register as clicked when the user hits Enter, which looked like "nothing
+    # happens" on some devices.
+    with st.form("login_form"):
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Log in")
 
-    if st.button("Log in"):
-        if (
-            username == st.secrets["APP_USERNAME"]
-            and password == st.secrets["APP_PASSWORD"]
-        ):
+    if submitted:
+        # Coerce the secret to str (a purely numeric value is parsed as an int)
+        # and strip surrounding whitespace, which password managers, autofill,
+        # and copy-paste frequently append.
+        expected = str(st.secrets["APP_PASSWORD"]).strip()
+        if password.strip() == expected:
             st.session_state.authenticated = True
             st.rerun()
         else:
-            st.error("Invalid login or password")
+            st.error("Invalid password")
 
     return False
 
