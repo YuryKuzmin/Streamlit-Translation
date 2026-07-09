@@ -75,7 +75,7 @@ ADVANCED_PROMPT_SOURCE = (
 LANGUAGES = ["Russian"]
 
 MODEL_CHOICES = {
-    "Claude Sonnet": {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+    "Claude Sonnet": {"provider": "anthropic", "model": "claude-sonnet-5"},
     "Claude Opus": {"provider": "anthropic", "model": "claude-opus-4-8"},
     "GPT": {"provider": "openai", "model": "gpt-5.5"},
 }
@@ -202,12 +202,21 @@ def call_model(provider: str, model: str, prompt: str, user_text: str, api_key: 
     if provider == "anthropic":
         from anthropic import Anthropic  # type: ignore
         client = Anthropic(api_key=api_key)
-        
+
+        # Sonnet 5 reasons before translating (adaptive thinking), which helps on
+        # nuanced passages; Opus 4.8 stays non-thinking (its default when the
+        # param is omitted) to keep it fast. Thinking blocks are filtered out of
+        # output_text below, so they never leak into the translation.
+        request_kwargs = {}
+        if model == "claude-sonnet-5":
+            request_kwargs["thinking"] = {"type": "adaptive"}
+
         with client.messages.stream(
             model=model,
             max_tokens=MAX_OUTPUT_LIMIT,
             system=prompt,
             messages=[{"role": "user", "content": user_text}],
+            **request_kwargs,
         ) as stream:
             response = stream.get_final_message()
 
@@ -367,7 +376,7 @@ if st.session_state.is_translating:
             openai_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 
             model_speeds = {
-                "claude-sonnet-4-6": 45.0,
+                "claude-sonnet-5": 45.0,
                 "claude-opus-4-8": 15.0,
                 "gpt-5.5": 50.0
             }
