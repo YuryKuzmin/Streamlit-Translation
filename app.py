@@ -378,7 +378,7 @@ class TranslationThread(threading.Thread):
 st.set_page_config(page_title="Translation App", layout="wide")
 init_db()
 
-st.title("Translation Stub")
+st.title("Streamlit Translator")
 st.caption("Language is fixed to Russian for now; the rest is wired for future expansion.")
 
 top_left, top_mid, top_right = st.columns([1, 1, 1])
