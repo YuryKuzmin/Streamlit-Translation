@@ -1,0 +1,15 @@
+# Streamlit secrets — API keys and the app password live here. Never commit.
+.streamlit/secrets.toml
+.env
+
+# Local token-usage database, recreated on first run
+token_usage.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local Claude Code settings
+.claude/settings.local.json

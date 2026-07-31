@@ -74,10 +74,79 @@ ADVANCED_PROMPT_SOURCE = (
 
 LANGUAGES = ["Russian"]
 
+# Reasoning-effort labels shown in the UI, ordered fastest/cheapest -> most thorough.
+# EFFORT_OFF turns thinking/reasoning off entirely; the rest map to API values below.
+EFFORT_OFF = "Off (no thinking)"
+EFFORT_API_VALUE = {
+    "Low": "low",
+    "Medium": "medium",
+    "High": "high",
+    "Extra high": "xhigh",
+    "Max": "max",
+}
+
+# Claude Opus 5, Opus 4.8 and Sonnet 5 all support the full five-level ladder plus
+# adaptive thinking. Keeping "Off" as a dropdown entry (rather than a separate
+# toggle) is deliberate: on Opus 5, thinking:{"type":"disabled"} is rejected with a
+# 400 at xhigh/max effort, and a single list makes that combination unselectable.
+FULL_EFFORTS = [EFFORT_OFF, "Low", "Medium", "High", "Extra high", "Max"]
+
 MODEL_CHOICES = {
-    "Claude Sonnet": {"provider": "anthropic", "model": "claude-sonnet-5"},
-    "Claude Opus": {"provider": "anthropic", "model": "claude-opus-4-8"},
-    "GPT": {"provider": "openai", "model": "gpt-5.5"},
+    "Claude Opus 5": {
+        "provider": "anthropic",
+        "model": "claude-opus-5",
+        "efforts": FULL_EFFORTS,
+        "default_effort": "High",
+        "speed": 15.0,
+    },
+    "Claude Opus 4.8": {
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+        "efforts": FULL_EFFORTS,
+        "default_effort": "High",
+        "speed": 15.0,
+    },
+    "Claude Sonnet 5": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "efforts": FULL_EFFORTS,
+        "default_effort": "High",
+        "speed": 45.0,
+    },
+    "GPT 5.6 Sol": {
+        "provider": "openai",
+        "model": "gpt-5.6-sol",
+        "efforts": FULL_EFFORTS,
+        "default_effort": "Medium",
+        "speed": 30.0,
+    },
+    "GPT 5.6 Terra": {
+        "provider": "openai",
+        "model": "gpt-5.6-terra",
+        "efforts": FULL_EFFORTS,
+        "default_effort": "Medium",
+        "speed": 45.0,
+    },
+    # GPT 5.5 predates the 5.6 effort ladder; its supported levels aren't verified
+    # here, so it runs at the model default with no effort parameter sent.
+    "GPT 5.5": {
+        "provider": "openai",
+        "model": "gpt-5.5",
+        "efforts": [],
+        "default_effort": None,
+        "speed": 50.0,
+    },
+}
+
+# Rough throughput multipliers for the ETA only — higher effort means more thinking
+# tokens and a slower wall clock. These are heuristics, like the base speeds.
+EFFORT_SPEED_FACTOR = {
+    EFFORT_OFF: 1.6,
+    "Low": 1.3,
+    "Medium": 1.0,
+    "High": 0.75,
+    "Extra high": 0.45,
+    "Max": 0.30,
 }
 
 
@@ -196,20 +265,32 @@ def chunk_text(text: str, max_words: int = 10000) -> list[str]:
     return chunks
 
 
-def call_model(provider: str, model: str, prompt: str, user_text: str, api_key: str) -> Tuple[str, int, int]:
-    MAX_OUTPUT_LIMIT = 30000
+def call_model(
+    provider: str,
+    model: str,
+    prompt: str,
+    user_text: str,
+    api_key: str,
+    effort: Optional[str] = None,
+) -> Tuple[str, int, int]:
+    # max_tokens covers thinking *and* the translation, so leave extra headroom at
+    # the two deepest levels or long chunks can be truncated mid-sentence.
+    MAX_OUTPUT_LIMIT = 64000 if effort in ("Extra high", "Max") else 30000
+
+    api_effort = EFFORT_API_VALUE.get(effort) if effort else None
 
     if provider == "anthropic":
         from anthropic import Anthropic  # type: ignore
         client = Anthropic(api_key=api_key)
 
-        # Sonnet 5 reasons before translating (adaptive thinking), which helps on
-        # nuanced passages; Opus 4.8 stays non-thinking (its default when the
-        # param is omitted) to keep it fast. Thinking blocks are filtered out of
-        # output_text below, so they never leak into the translation.
+        # Thinking blocks are filtered out of output_text below, so reasoning never
+        # leaks into the translation itself.
         request_kwargs = {}
-        if model == "claude-sonnet-5":
+        if effort == EFFORT_OFF:
+            request_kwargs["thinking"] = {"type": "disabled"}
+        elif api_effort:
             request_kwargs["thinking"] = {"type": "adaptive"}
+            request_kwargs["output_config"] = {"effort": api_effort}
 
         with client.messages.stream(
             model=model,
@@ -234,11 +315,20 @@ def call_model(provider: str, model: str, prompt: str, user_text: str, api_key: 
         from openai import OpenAI  # type: ignore
         client = OpenAI(api_key=api_key)
         
+        # GPT 5.6 uses "none" as its no-reasoning setting. Models with no configured
+        # effort list (e.g. GPT 5.5) send no reasoning parameter at all.
+        request_kwargs = {}
+        if effort == EFFORT_OFF:
+            request_kwargs["reasoning"] = {"effort": "none"}
+        elif api_effort:
+            request_kwargs["reasoning"] = {"effort": api_effort}
+
         response = client.responses.create(
             model=model,
             instructions=prompt,
             input=user_text,
             max_output_tokens=MAX_OUTPUT_LIMIT,
+            **request_kwargs,
         )
         
         output_text = getattr(response, "output_text", None)
@@ -263,20 +353,22 @@ def call_model(provider: str, model: str, prompt: str, user_text: str, api_key: 
 
 
 class TranslationThread(threading.Thread):
-    def __init__(self, provider, model, prompt, user_text, api_key):
+    def __init__(self, provider, model, prompt, user_text, api_key, effort=None):
         super().__init__()
         self.provider = provider
         self.model = model
         self.prompt = prompt
         self.user_text = user_text
         self.api_key = api_key
+        self.effort = effort
         self.result = None
         self.exception = None
 
     def run(self):
         try:
             self.result = call_model(
-                self.provider, self.model, self.prompt, self.user_text, self.api_key
+                self.provider, self.model, self.prompt, self.user_text,
+                self.api_key, self.effort,
             )
         except Exception as e:
             self.exception = e
@@ -289,13 +381,37 @@ init_db()
 st.title("Translation Stub")
 st.caption("Language is fixed to Russian for now; the rest is wired for future expansion.")
 
-top_left, top_right = st.columns([1, 1])
+top_left, top_mid, top_right = st.columns([1, 1, 1])
 with top_left:
     language = st.selectbox("Select language", LANGUAGES, index=0)
-with top_right:
+with top_mid:
     model_label = st.selectbox("Select model", list(MODEL_CHOICES.keys()), index=0)
 
 model_info = MODEL_CHOICES[model_label]
+
+with top_right:
+    # The option list is per-model. Keying the widget by model label gives each
+    # model its own selection, so switching models can't carry over a level the
+    # new model doesn't support.
+    available_efforts = model_info["efforts"]
+    if available_efforts:
+        effort = st.selectbox(
+            "Reasoning effort",
+            available_efforts,
+            index=available_efforts.index(model_info["default_effort"]),
+            key=f"effort_{model_label}",
+            help="Higher levels think longer before translating: better on nuanced "
+                 "passages, but slower and more tokens. 'Off' skips thinking entirely.",
+        )
+    else:
+        st.selectbox(
+            "Reasoning effort",
+            ["Model default"],
+            disabled=True,
+            key=f"effort_{model_label}",
+            help="This model has no configurable reasoning effort.",
+        )
+        effort = None
 
 st.divider()
 
@@ -375,13 +491,10 @@ if st.session_state.is_translating:
             anthropic_key = st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
             openai_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 
-            model_speeds = {
-                "claude-sonnet-5": 45.0,
-                "claude-opus-4-8": 15.0,
-                "gpt-5.5": 50.0
-            }
-            avg_speed = model_speeds.get(model_info["model"], 30.0)
-            
+            # Base throughput comes from the model registry; deeper reasoning
+            # slows the wall clock, so scale by the selected effort.
+            avg_speed = model_info["speed"] * EFFORT_SPEED_FACTOR.get(effort, 1.0)
+
             est_words = len(input_text.split())
             est_total_tokens = est_words * 2.8 
             est_total_seconds = max(5.0, est_total_tokens / avg_speed)
@@ -394,7 +507,7 @@ if st.session_state.is_translating:
                 if not active_api_key:
                     raise RuntimeError(f"Missing API key for {model_info['provider']}.")
 
-                t = TranslationThread(model_info["provider"], model_info["model"], prompt_text, chunk, active_api_key)
+                t = TranslationThread(model_info["provider"], model_info["model"], prompt_text, chunk, active_api_key, effort)
                 t.start()
                 
                 chunk_start_time = time.time()
@@ -441,6 +554,7 @@ if st.session_state.is_translating:
             st.session_state["last_total_tokens"] = total_tokens
             st.session_state["last_all_time_tokens"] = all_time_tokens
             st.session_state["last_model_label"] = model_label
+            st.session_state["last_effort"] = effort or "Model default"
             st.session_state["last_model_name"] = model_info["model"]
             st.session_state["last_provider"] = model_info["provider"]
             st.session_state["last_chunk_count"] = len(chunks)
@@ -476,6 +590,7 @@ if "last_output" in st.session_state:
     # Expanded stats block containing all requested info
     st.caption(
         f"**Model used:** {st.session_state['last_model_label']} ({st.session_state['last_model_name']}) | "
+        f"**Reasoning effort:** {st.session_state.get('last_effort', 'n/a')} | "
         f"**Chunks processed:** {st.session_state.get('last_chunk_count', 1)}"
     )
     st.caption(
