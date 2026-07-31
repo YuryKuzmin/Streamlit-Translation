@@ -1,4 +1,4 @@
-"""Streamlit translation stub app.
+"""Streamlit translation app.
 
 Required packages:
   streamlit
@@ -375,11 +375,11 @@ class TranslationThread(threading.Thread):
 
 
 # --- Main UI ---
-st.set_page_config(page_title="Translation App", layout="wide")
+st.set_page_config(page_title="Streamlit Translator", layout="wide")
 init_db()
 
 st.title("Streamlit Translator")
-st.caption("Language is fixed to Russian for now; the rest is wired for future expansion.")
+st.caption("Translates pasted text or a public Google Doc into Russian.")
 
 top_left, top_mid, top_right = st.columns([1, 1, 1])
 with top_left:
