@@ -68,6 +68,8 @@ if not check_password():
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = APP_DIR / "token_usage.sqlite3"
 
+PROMPTS_DIR = APP_DIR / "prompts"
+
 ADVANCED_PROMPT_SOURCE = (
     "https://docs.google.com/document/d/1fqFrF3_mUo7MZfKQktt7345GqSZqe0VcKZpXsBtLPmc/edit?tab=t.0"
 )
@@ -81,15 +83,12 @@ EFFORT_API_VALUE = {
     "Low": "low",
     "Medium": "medium",
     "High": "high",
-    "Extra high": "xhigh",
-    "Max": "max",
 }
 
-# Claude Opus 5, Opus 4.8 and Sonnet 5 all support the full five-level ladder plus
-# adaptive thinking. Keeping "Off" as a dropdown entry (rather than a separate
-# toggle) is deliberate: on Opus 5, thinking:{"type":"disabled"} is rejected with a
-# 400 at xhigh/max effort, and a single list makes that combination unselectable.
-FULL_EFFORTS = [EFFORT_OFF, "Low", "Medium", "High", "Extra high", "Max"]
+# Options stop at "High", which is also the API default on every model here; the
+# deeper xhigh/max levels are intentionally not offered. "Off" lives in this same
+# list rather than being a separate toggle, so thinking is one single control.
+FULL_EFFORTS = [EFFORT_OFF, "Low", "Medium", "High"]
 
 MODEL_CHOICES = {
     "Claude Opus 5": {
@@ -145,8 +144,6 @@ EFFORT_SPEED_FACTOR = {
     "Low": 1.3,
     "Medium": 1.0,
     "High": 0.75,
-    "Extra high": 0.45,
-    "Max": 0.30,
 }
 
 
@@ -221,11 +218,31 @@ def fetch_public_google_doc_text(url: str) -> str:
     return response.text.strip()
 
 
+def load_bundled_prompt(filename: str) -> str:
+    """Read a prompt shipped alongside the app.
+
+    Nastya's prompt lives in the repo rather than being fetched from its Google
+    Doc: that doc is not publicly viewable, and the app authenticates to Google
+    nowhere, so an export request returns 401. Reading it locally is also faster
+    than a network round trip. To update it, edit the file and redeploy.
+    """
+    path = PROMPTS_DIR / filename
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        raise RuntimeError(f"Bundled prompt file is missing: {path}")
+
+
 def resolve_prompt(prompt_mode: str, language: str, prompt_doc_url: str, custom_prompt: str) -> str:
     if prompt_mode == "Simple prompt":
         return f"Translate the following into {language}"
-    if prompt_mode == "Advanced prompt":
+    if prompt_mode == "Advanced (Yury)":
+        # Still read live from its Google Doc, which is publicly viewable, so
+        # edits to that doc take effect without a redeploy (cached 5 min).
         prompt_text = fetch_public_google_doc_text(ADVANCED_PROMPT_SOURCE)
+        return prompt_text.replace("$LANGUAGE", language)
+    if prompt_mode == "Advanced (Nastya)":
+        prompt_text = load_bundled_prompt("advanced_nastya.md")
         return prompt_text.replace("$LANGUAGE", language)
     if prompt_mode == "Google Doc":
         prompt_text = fetch_public_google_doc_text(prompt_doc_url)
@@ -273,9 +290,9 @@ def call_model(
     api_key: str,
     effort: Optional[str] = None,
 ) -> Tuple[str, int, int]:
-    # max_tokens covers thinking *and* the translation, so leave extra headroom at
-    # the two deepest levels or long chunks can be truncated mid-sentence.
-    MAX_OUTPUT_LIMIT = 64000 if effort in ("Extra high", "Max") else 30000
+    # max_tokens covers thinking *and* the translation. 30k is ample now that
+    # effort stops at "High"; the deeper levels that needed 64k aren't offered.
+    MAX_OUTPUT_LIMIT = 30000
 
     api_effort = EFFORT_API_VALUE.get(effort) if effort else None
 
@@ -417,7 +434,7 @@ st.divider()
 
 prompt_mode = st.radio(
     "Prompt selection",
-    ["Simple prompt", "Advanced prompt", "Google Doc", "Custom prompt"],
+    ["Simple prompt", "Advanced (Yury)", "Advanced (Nastya)", "Google Doc", "Custom prompt"],
     horizontal=True,
 )
 
