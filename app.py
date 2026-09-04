@@ -85,9 +85,10 @@ EFFORT_API_VALUE = {
     "High": "high",
 }
 
-# Options stop at "High", which is also the API default on every model here; the
-# deeper xhigh/max levels are intentionally not offered. "Off" lives in this same
-# list rather than being a separate toggle, so thinking is one single control.
+# Options stop at "High" (the API's own default); the deeper xhigh/max levels are
+# intentionally not offered. The app itself defaults to "Off", so translations stay
+# fast unless more reasoning is asked for. "Off" sits in this same list rather than
+# being a separate toggle, keeping thinking a single control.
 FULL_EFFORTS = [EFFORT_OFF, "Low", "Medium", "High"]
 
 MODEL_CHOICES = {
@@ -95,35 +96,35 @@ MODEL_CHOICES = {
         "provider": "anthropic",
         "model": "claude-opus-5",
         "efforts": FULL_EFFORTS,
-        "default_effort": "High",
+        "default_effort": EFFORT_OFF,
         "speed": 15.0,
     },
     "Claude Opus 4.8": {
         "provider": "anthropic",
         "model": "claude-opus-4-8",
         "efforts": FULL_EFFORTS,
-        "default_effort": "High",
+        "default_effort": EFFORT_OFF,
         "speed": 15.0,
     },
     "Claude Sonnet 5": {
         "provider": "anthropic",
         "model": "claude-sonnet-5",
         "efforts": FULL_EFFORTS,
-        "default_effort": "High",
+        "default_effort": EFFORT_OFF,
         "speed": 45.0,
     },
     "GPT 5.6 Sol": {
         "provider": "openai",
         "model": "gpt-5.6-sol",
         "efforts": FULL_EFFORTS,
-        "default_effort": "Medium",
+        "default_effort": EFFORT_OFF,
         "speed": 30.0,
     },
     "GPT 5.6 Terra": {
         "provider": "openai",
         "model": "gpt-5.6-terra",
         "efforts": FULL_EFFORTS,
-        "default_effort": "Medium",
+        "default_effort": EFFORT_OFF,
         "speed": 45.0,
     },
     # GPT 5.5 predates the 5.6 effort ladder; its supported levels aren't verified
@@ -244,10 +245,10 @@ def resolve_prompt(prompt_mode: str, language: str, prompt_doc_url: str, custom_
     if prompt_mode == "Advanced (Nastya)":
         prompt_text = load_bundled_prompt("advanced_nastya.md")
         return prompt_text.replace("$LANGUAGE", language)
-    if prompt_mode == "Google Doc":
+    if prompt_mode == "Custom (Google Doc)":
         prompt_text = fetch_public_google_doc_text(prompt_doc_url)
         return prompt_text.replace("$LANGUAGE", language)
-    if prompt_mode == "Custom prompt":
+    if prompt_mode == "Custom (Paste)":
         return custom_prompt.strip().replace("$LANGUAGE", language)
     raise ValueError("Unknown prompt mode.")
 
@@ -434,25 +435,52 @@ st.divider()
 
 prompt_mode = st.radio(
     "Prompt selection",
-    ["Simple prompt", "Advanced (Yury)", "Advanced (Nastya)", "Google Doc", "Custom prompt"],
+    [
+        "Simple prompt",
+        "Advanced (Yury)",
+        "Advanced (Nastya)",
+        "Custom (Google Doc)",
+        "Custom (Paste)",
+    ],
     horizontal=True,
 )
 
 prompt_doc_url = ""
 custom_prompt = ""
 
-if prompt_mode == "Google Doc":
+if prompt_mode == "Custom (Google Doc)":
     prompt_doc_url = st.text_input(
         "Google Doc link for the prompt",
         placeholder="https://docs.google.com/document/d/.../edit",
         help="Make sure the Google Doc is set to View for everyone.",
     )
-elif prompt_mode == "Custom prompt":
+elif prompt_mode == "Custom (Paste)":
     custom_prompt = st.text_area(
         "Custom prompt",
         height=180,
         placeholder="Type or paste your prompt here.",
     )
+
+# Read-only preview of the prompt that will actually be sent, so the effect of the
+# selection above is visible without running a translation. Resolving can fail (an
+# unreachable Doc, a blank field), so never let it break the page.
+if prompt_mode == "Custom (Google Doc)" and not prompt_doc_url.strip():
+    prompt_preview = "Paste a Google Doc link above to preview the prompt."
+elif prompt_mode == "Custom (Paste)" and not custom_prompt.strip():
+    prompt_preview = "Type or paste a prompt above to preview it."
+else:
+    try:
+        prompt_preview = resolve_prompt(prompt_mode, language, prompt_doc_url, custom_prompt)
+    except Exception as exc:
+        prompt_preview = f"Preview unavailable: {exc}"
+
+st.text_area(
+    "Prompt preview",
+    value=prompt_preview,
+    height=120,
+    disabled=True,
+    help="Read-only. This is the prompt that will be sent along with your text.",
+)
 
 st.subheader("Input text")
 input_mode = st.radio("Input source", ["Paste text", "Google Doc"], horizontal=True)
