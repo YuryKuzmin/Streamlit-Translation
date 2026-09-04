@@ -462,25 +462,25 @@ elif prompt_mode == "Custom (Paste)":
     )
 
 # Read-only preview of the prompt that will actually be sent, so the effect of the
-# selection above is visible without running a translation. Resolving can fail (an
-# unreachable Doc, a blank field), so never let it break the page.
-if prompt_mode == "Custom (Google Doc)" and not prompt_doc_url.strip():
-    prompt_preview = "Paste a Google Doc link above to preview the prompt."
-elif prompt_mode == "Custom (Paste)" and not custom_prompt.strip():
-    prompt_preview = "Type or paste a prompt above to preview it."
-else:
-    try:
-        prompt_preview = resolve_prompt(prompt_mode, language, prompt_doc_url, custom_prompt)
-    except Exception as exc:
-        prompt_preview = f"Preview unavailable: {exc}"
+# selection above is visible without running a translation. Skipped for
+# Custom (Paste), where the editable box above already shows the same text.
+if prompt_mode != "Custom (Paste)":
+    if prompt_mode == "Custom (Google Doc)" and not prompt_doc_url.strip():
+        prompt_preview = "Paste a Google Doc link above to preview the prompt."
+    else:
+        try:
+            prompt_preview = resolve_prompt(prompt_mode, language, prompt_doc_url, custom_prompt)
+        except Exception as exc:
+            # An unreachable Doc must not break the page.
+            prompt_preview = f"Preview unavailable: {exc}"
 
-st.text_area(
-    "Prompt preview",
-    value=prompt_preview,
-    height=120,
-    disabled=True,
-    help="Read-only. This is the prompt that will be sent along with your text.",
-)
+    st.text_area(
+        "Prompt preview",
+        value=prompt_preview,
+        height=120,
+        disabled=True,
+        help="Read-only. This is the prompt that will be sent along with your text.",
+    )
 
 st.subheader("Input text")
 input_mode = st.radio("Input source", ["Paste text", "Google Doc"], horizontal=True)
