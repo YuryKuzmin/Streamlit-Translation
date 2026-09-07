@@ -17,6 +17,8 @@ Secrets expected (Streamlit secrets or environment variables):
 
 from __future__ import annotations
 
+import csv
+import io
 import os
 import re
 import sqlite3
@@ -75,6 +77,44 @@ ADVANCED_PROMPT_SOURCE = (
 )
 
 LANGUAGES = ["Russian"]
+
+# --- Glossary -------------------------------------------------------------
+# A glossary is a Google Sheet with three columns:
+#   A = English term
+#   B = its translation
+#   C = optional notes for that term (context, grammatical gender, when it
+#       applies) - free-form guidance passed through to the model verbatim.
+#
+# A sheet can hold hundreds of entries, so the whole thing is never sent. Only
+# rows whose English term actually occurs in the text being translated are
+# appended to the prompt, which keeps it small and stops unrelated entries
+# diluting the model's attention. See select_glossary_entries().
+
+GLOSSARY_NONE = "None"
+GLOSSARY_TEAM = "Team glossary (recommended)"
+GLOSSARY_CUSTOM = "Custom glossary"
+
+# The shared team glossary. Read live (cached 60s) rather than baked in, so
+# edits to the sheet take effect without a redeploy.
+TEAM_GLOSSARY_SOURCE = (
+    "https://docs.google.com/spreadsheets/d/1DE994NrkCdqQ9MODykrFhJ5QlK_jwv_BIkEZDm4P9vE/edit"
+)
+
+GLOSSARY_FORMAT_HELP = (
+    "A Google Sheet with three columns - A: the English term, B: its translation, "
+    "C: optional notes for that term (context, gender, when it applies). "
+    "A header row is fine. Share it as 'Anyone with the link -> Viewer'. "
+    "Only terms that actually appear in your text get added to the prompt."
+)
+
+# First-row values that mean the sheet has a header rather than a real entry.
+_GLOSSARY_HEADER_TERMS = {
+    "english", "english word", "english term", "term", "source", "word", "en", "isha",
+}
+_GLOSSARY_HEADER_META = {
+    "translation", "translations", "russian", "target", "meaning",
+    "gender", "note", "notes", "comment", "comments", "clarification", "context",
+}
 
 # Reasoning-effort labels shown in the UI, ordered fastest/cheapest -> most thorough.
 # EFFORT_OFF turns thinking/reasoning off entirely; the rest map to API values below.
@@ -232,6 +272,150 @@ def load_bundled_prompt(filename: str) -> str:
         return path.read_text(encoding="utf-8").strip()
     except FileNotFoundError:
         raise RuntimeError(f"Bundled prompt file is missing: {path}")
+
+
+def extract_google_sheet_id(url: str) -> Optional[str]:
+    if not url:
+        return None
+    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", url)
+    return match.group(1) if match else None
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_google_sheet_rows(url: str) -> list:
+    """Read a public Google Sheet as a list of (term, translation, notes).
+
+    Cached for only a minute: a glossary is a living document, so edits should
+    show up quickly without a redeploy.
+    """
+    sheet_id = extract_google_sheet_id(url)
+    if not sheet_id:
+        raise ValueError("Could not find a Google Sheet ID in that link.")
+
+    export_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+    gid = re.search(r"[#&?]gid=([0-9]+)", url)
+    if gid:
+        export_url += f"&gid={gid.group(1)}"
+
+    response = requests.get(export_url, timeout=30)
+    response.raise_for_status()
+    response.encoding = "utf-8"
+
+    rows = []
+    for raw in csv.reader(io.StringIO(response.text)):
+        term = (raw[0] if len(raw) > 0 else "").strip()
+        translation = (raw[1] if len(raw) > 1 else "").strip()
+        notes = (raw[2] if len(raw) > 2 else "").strip()
+        if term and translation:
+            rows.append((term, translation, notes))
+
+    # Drop a header row. Checking columns B/C as well as A matters: a sheet may
+    # label column A with something domain-specific ("isha") that no generic
+    # list would catch, while B/C are almost always "Translation"/"Gender".
+    if rows:
+        term, translation, notes = rows[0]
+        if (
+            term.lower() in _GLOSSARY_HEADER_TERMS
+            or translation.lower() in _GLOSSARY_HEADER_META
+            or notes.lower() in _GLOSSARY_HEADER_META
+        ):
+            rows = rows[1:]
+    return rows
+
+
+# Endings an English term may pick up in running text.
+_INFLECTION = r"(?:e|es|s|ed|d|ing|ion|ions|al|ally|ly|'s|’s)?"
+
+
+def build_term_pattern(term: str) -> Optional[str]:
+    """Regex matching a glossary term regardless of case or inflected ending.
+
+    Matching is deliberately generous: a spurious entry costs one line of prompt,
+    while a missed one silently loses the required translation.
+    """
+    words = re.findall(r"[A-Za-z0-9']+", term)
+    if not words:
+        return None
+
+    parts = []
+    for word in words:
+        base = word.lower()
+        # Drop a final 'e' so "meditate" also matches "meditating"/"meditation";
+        # the suffix group restores it for the base form.
+        if len(base) > 3 and base.endswith("e"):
+            base = base[:-1]
+        stem = re.escape(base)
+        # Allow the final consonant to double, so "run" matches "running".
+        if (
+            len(base) >= 3
+            and base[-1].isalpha()
+            and base[-1] not in "aeiou"
+            and base[-2] in "aeiou"
+        ):
+            stem += re.escape(base[-1]) + "?"
+        parts.append(stem + _INFLECTION)
+
+    # Join with non-word characters rather than plain whitespace: multi-word
+    # entries in a real glossary contain commas, hyphens and line breaks.
+    return r"\b" + r"\W+".join(parts) + r"\b"
+
+
+def select_glossary_entries(rows: list, text: str) -> list:
+    """Keep only the glossary rows whose English term appears in `text`."""
+    if not rows or not text:
+        return []
+    matched = []
+    for row in rows:
+        pattern = build_term_pattern(row[0])
+        if not pattern:
+            continue
+        try:
+            if re.search(pattern, text, re.IGNORECASE):
+                matched.append(row)
+        except re.error:
+            continue
+    return matched
+
+
+def format_glossary_block(entries: list) -> str:
+    lines = [
+        "",
+        "---",
+        "",
+        "GLOSSARY - required terminology for this text",
+        "",
+        "Use these translations for the English terms listed below. Where a note is",
+        "given it is context-specific guidance for that term (for example which",
+        "grammatical gender to use); apply it in preference to the default form.",
+        "",
+    ]
+    for term, translation, notes in entries:
+        line = '- "' + term + '" -> "' + translation + '"'
+        if notes:
+            line += "  [" + notes + "]"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def build_glossary_section(glossary_mode: str, custom_url: str, text: str):
+    """Return (block, matched_count, total_count) for the selected glossary."""
+    if glossary_mode == GLOSSARY_NONE:
+        return "", 0, 0
+
+    if glossary_mode == GLOSSARY_TEAM:
+        url = TEAM_GLOSSARY_SOURCE
+        if not url:
+            raise RuntimeError("The team glossary link is not configured.")
+    else:
+        url = custom_url
+        if not url.strip():
+            raise RuntimeError("Paste a Google Sheet link for the custom glossary.")
+
+    rows = fetch_google_sheet_rows(url)
+    matched = select_glossary_entries(rows, text)
+    if not matched:
+        return "", 0, len(rows)
+    return format_glossary_block(matched), len(matched), len(rows)
 
 
 def resolve_prompt(prompt_mode: str, language: str, prompt_doc_url: str, custom_prompt: str) -> str:
@@ -482,6 +666,35 @@ if prompt_mode != "Custom (Paste)":
         help="Read-only. This is the prompt that will be sent along with your text.",
     )
 
+glossary_mode = st.radio(
+    "Glossary",
+    [GLOSSARY_NONE, GLOSSARY_TEAM, GLOSSARY_CUSTOM],
+    index=1 if TEAM_GLOSSARY_SOURCE else 0,
+    horizontal=True,
+    help=GLOSSARY_FORMAT_HELP,
+)
+
+custom_glossary_url = ""
+if glossary_mode == GLOSSARY_CUSTOM:
+    custom_glossary_url = st.text_input(
+        "Google Sheet link for the glossary",
+        placeholder="https://docs.google.com/spreadsheets/d/.../edit",
+        help=GLOSSARY_FORMAT_HELP,
+    )
+    st.caption(
+        "Three columns: **A** the English term, **B** its translation, "
+        "**C** optional notes for that term - context, grammatical gender, or when "
+        "it applies. A header row is fine. The sheet must be shared as "
+        "'Anyone with the link -> Viewer'."
+    )
+
+if glossary_mode != GLOSSARY_NONE:
+    st.caption(
+        "Only entries whose English term actually appears in your text are added "
+        "to the prompt, so a large glossary stays cheap. Matching ignores case and "
+        "common word endings."
+    )
+
 st.subheader("Input text")
 input_mode = st.radio("Input source", ["Paste text", "Google Doc"], horizontal=True)
 
@@ -518,14 +731,27 @@ st.button(
 
 if st.session_state.is_translating:
     try:
-        prompt_text = resolve_prompt(prompt_mode, language, prompt_doc_url, custom_prompt)
+        # Input is resolved first: which glossary entries are relevant depends on
+        # the text, so the prompt can only be finished once the text is known.
         input_text = resolve_input(input_mode, pasted_text, input_doc_url)
+        prompt_text = resolve_prompt(prompt_mode, language, prompt_doc_url, custom_prompt)
 
         if not input_text:
             st.error("Input text is empty.")
         else:
             if len(input_text.split()) > 3000 and input_mode == "Google Doc":
                 st.warning("You are about to translate a very large document.")
+
+            glossary_block, glossary_hits, glossary_total = build_glossary_section(
+                glossary_mode, custom_glossary_url, input_text
+            )
+            if glossary_block:
+                prompt_text = prompt_text.rstrip() + "\n" + glossary_block
+            if glossary_total:
+                st.caption(
+                    f"Glossary: {glossary_hits} of {glossary_total} entries matched "
+                    f"your text and were added to the prompt."
+                )
 
             chunks = chunk_text(input_text, max_words=10000)
             
@@ -600,6 +826,11 @@ if st.session_state.is_translating:
             st.session_state["last_all_time_tokens"] = all_time_tokens
             st.session_state["last_model_label"] = model_label
             st.session_state["last_effort"] = effort or "Model default"
+            st.session_state["last_glossary"] = (
+                f"{glossary_mode} ({glossary_hits}/{glossary_total} entries used)"
+                if glossary_total
+                else glossary_mode
+            )
             st.session_state["last_model_name"] = model_info["model"]
             st.session_state["last_provider"] = model_info["provider"]
             st.session_state["last_chunk_count"] = len(chunks)
@@ -636,6 +867,7 @@ if "last_output" in st.session_state:
     st.caption(
         f"**Model used:** {st.session_state['last_model_label']} ({st.session_state['last_model_name']}) | "
         f"**Reasoning effort:** {st.session_state.get('last_effort', 'n/a')} | "
+        f"**Glossary:** {st.session_state.get('last_glossary', 'n/a')} | "
         f"**Chunks processed:** {st.session_state.get('last_chunk_count', 1)}"
     )
     st.caption(
