@@ -689,6 +689,25 @@ if glossary_mode == GLOSSARY_CUSTOM:
     )
 
 if glossary_mode != GLOSSARY_NONE:
+    # Points at the sheet in use rather than showing its contents: the sheet runs
+    # to hundreds of entries, and only the handful matching the text ever reach
+    # the model. Those are visible in the full prompt shown after a run.
+    if glossary_mode == GLOSSARY_TEAM:
+        glossary_preview = TEAM_GLOSSARY_SOURCE or "The team glossary link is not configured."
+    else:
+        glossary_preview = custom_glossary_url.strip() or "Paste a Google Sheet link above."
+
+    st.text_area(
+        "Glossary preview",
+        value=glossary_preview,
+        height=68,
+        disabled=True,
+        help=(
+            "The glossary sheet in use. Its contents are not shown here - only the "
+            "entries whose English term appears in your text are added to the "
+            "prompt, and you can see exactly which ones after a translation runs."
+        ),
+    )
     st.caption(
         "Only entries whose English term actually appears in your text are added "
         "to the prompt, so a large glossary stays cheap. Matching ignores case and "
@@ -875,6 +894,22 @@ if "last_output" in st.session_state:
         f"({st.session_state['last_input_tokens']} input + {st.session_state['last_output_tokens']} output)."
     )
     st.caption(f"All-time token total stored locally: {st.session_state['last_all_time_tokens']}.")
+
+    # The exact prompt that went to the model, glossary block included, so the
+    # selected terminology is inspectable after the fact.
+    sent_prompt = st.session_state.get("last_prompt", "")
+    st.text_area(
+        "Prompt sent to the model",
+        value=sent_prompt,
+        height=300,
+        disabled=True,
+        help="Read-only. The complete system prompt for this run, including any "
+             "glossary entries matched against your text.",
+    )
+    st.caption(
+        f"Full prompt: {len(sent_prompt.split())} words, {len(sent_prompt)} characters. "
+        f"Glossary: {st.session_state.get('last_glossary', 'n/a')}."
+    )
 
 else:
     st.caption("No translation has been run yet.")
