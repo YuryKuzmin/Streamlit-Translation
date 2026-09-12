@@ -73,7 +73,7 @@ DB_PATH = APP_DIR / "token_usage.sqlite3"
 PROMPTS_DIR = APP_DIR / "prompts"
 
 ADVANCED_PROMPT_SOURCE = (
-    "https://docs.google.com/document/d/1fqFrF3_mUo7MZfKQktt7345GqSZqe0VcKZpXsBtLPmc/edit?tab=t.0"
+    "https://docs.google.com/document/d/1A-ycuuiAaKIoEsBQ6a2mb_c7Piob45fbZ1mr4spz7oo/edit?tab=t.0"
 )
 
 LANGUAGES = ["Russian"]
