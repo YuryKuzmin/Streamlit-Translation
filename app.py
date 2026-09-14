@@ -24,6 +24,7 @@ import re
 import sqlite3
 import time
 import threading
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
@@ -739,6 +740,9 @@ if "is_translating" not in st.session_state:
 
 def start_translation():
     st.session_state.is_translating = True
+    # Drop any error from a previous attempt so the banner reflects this run.
+    st.session_state.pop("last_error", None)
+    st.session_state.pop("last_error_detail", None)
 
 st.button(
     "Translate", 
@@ -853,12 +857,24 @@ if st.session_state.is_translating:
             st.session_state["last_model_name"] = model_info["model"]
             st.session_state["last_provider"] = model_info["provider"]
             st.session_state["last_chunk_count"] = len(chunks)
+            st.session_state.pop("last_error", None)
+            st.session_state.pop("last_error_detail", None)
             
     except Exception as exc:
-        st.error(str(exc))
+        # st.rerun() below aborts this run immediately and restarts the script,
+        # discarding anything rendered here - an st.error() call included. The
+        # failure has to be stashed in session state to survive that, otherwise
+        # the translation fails completely silently.
+        st.session_state["last_error"] = f"{type(exc).__name__}: {exc}"
+        st.session_state["last_error_detail"] = traceback.format_exc()
     finally:
         st.session_state.is_translating = False
         st.rerun()
+
+if st.session_state.get("last_error"):
+    st.error(f"Translation failed. {st.session_state['last_error']}")
+    with st.expander("Technical details"):
+        st.code(st.session_state.get("last_error_detail", ""), language="text")
 
 if "last_output" in st.session_state:
     st.divider()
