@@ -132,7 +132,22 @@ EFFORT_API_VALUE = {
 # being a separate toggle, keeping thinking a single control.
 FULL_EFFORTS = [EFFORT_OFF, "Low", "Medium", "High"]
 
+# For models whose thinking cannot be turned off. Claude Opus 5.5 has adaptive
+# thinking permanently on: thinking:{"type":"disabled"} returns a 400 at *every*
+# effort level, so offering "Off" for it would fail on every run.
+EFFORTS_ALWAYS_THINKING = ["Low", "Medium", "High"]
+
 MODEL_CHOICES = {
+    "Claude Opus 5.5": {
+        "provider": "anthropic",
+        "model": "claude-opus-5-5",
+        "efforts": EFFORTS_ALWAYS_THINKING,
+        # Thinking can't be switched off here, so "Low" is the closest thing to
+        # this app's Off-by-default preference. The model's own API default is
+        # "Medium" - raise it if translations come out under-considered.
+        "default_effort": "Low",
+        "speed": 15.0,
+    },
     "Claude Opus 5": {
         "provider": "anthropic",
         "model": "claude-opus-5",
@@ -154,6 +169,20 @@ MODEL_CHOICES = {
         "default_effort": EFFORT_OFF,
         "speed": 45.0,
     },
+    "GPT 6 Sol": {
+        "provider": "openai",
+        "model": "gpt-6-sol",
+        "efforts": FULL_EFFORTS,
+        "default_effort": EFFORT_OFF,
+        "speed": 30.0,
+    },
+    "GPT 6 Luna": {
+        "provider": "openai",
+        "model": "gpt-6-luna",
+        "efforts": FULL_EFFORTS,
+        "default_effort": EFFORT_OFF,
+        "speed": 55.0,
+    },
     "GPT 5.6 Sol": {
         "provider": "openai",
         "model": "gpt-5.6-sol",
@@ -167,15 +196,6 @@ MODEL_CHOICES = {
         "efforts": FULL_EFFORTS,
         "default_effort": EFFORT_OFF,
         "speed": 45.0,
-    },
-    # GPT 5.5 predates the 5.6 effort ladder; its supported levels aren't verified
-    # here, so it runs at the model default with no effort parameter sent.
-    "GPT 5.5": {
-        "provider": "openai",
-        "model": "gpt-5.5",
-        "efforts": [],
-        "default_effort": None,
-        "speed": 50.0,
     },
 }
 
