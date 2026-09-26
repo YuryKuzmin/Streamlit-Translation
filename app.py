@@ -148,13 +148,6 @@ MODEL_CHOICES = {
         "default_effort": "Low",
         "speed": 15.0,
     },
-    "Claude Opus 5": {
-        "provider": "anthropic",
-        "model": "claude-opus-5",
-        "efforts": FULL_EFFORTS,
-        "default_effort": EFFORT_OFF,
-        "speed": 15.0,
-    },
     "Claude Opus 4.8": {
         "provider": "anthropic",
         "model": "claude-opus-4-8",
