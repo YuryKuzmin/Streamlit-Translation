@@ -155,9 +155,9 @@ MODEL_CHOICES = {
         "default_effort": EFFORT_OFF,
         "speed": 15.0,
     },
-    "Claude Sonnet 5": {
+    "Claude Sonnet 5.5": {
         "provider": "anthropic",
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "efforts": FULL_EFFORTS,
         "default_effort": EFFORT_OFF,
         "speed": 45.0,
