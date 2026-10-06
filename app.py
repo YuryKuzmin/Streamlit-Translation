@@ -176,13 +176,6 @@ MODEL_CHOICES = {
         "default_effort": EFFORT_OFF,
         "speed": 55.0,
     },
-    "GPT 5.6 Sol": {
-        "provider": "openai",
-        "model": "gpt-5.6-sol",
-        "efforts": FULL_EFFORTS,
-        "default_effort": EFFORT_OFF,
-        "speed": 30.0,
-    },
     "GPT 5.6 Terra": {
         "provider": "openai",
         "model": "gpt-5.6-terra",
