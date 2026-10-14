@@ -12,6 +12,7 @@ Optional (for local token counting fallback):
 Secrets expected (Streamlit secrets or environment variables):
   OPENAI_API_KEY
   ANTHROPIC_API_KEY
+  OPENROUTER_API_KEY
   APP_PASSWORD   (login now uses this single password; APP_USERNAME is no longer read)
 """
 
@@ -148,13 +149,6 @@ MODEL_CHOICES = {
         "default_effort": "Low",
         "speed": 15.0,
     },
-    "Claude Opus 4.8": {
-        "provider": "anthropic",
-        "model": "claude-opus-4-8",
-        "efforts": FULL_EFFORTS,
-        "default_effort": EFFORT_OFF,
-        "speed": 15.0,
-    },
     "Claude Sonnet 5.5": {
         "provider": "anthropic",
         "model": "claude-sonnet-5-5",
@@ -176,12 +170,21 @@ MODEL_CHOICES = {
         "default_effort": EFFORT_OFF,
         "speed": 55.0,
     },
-    "GPT 5.6 Terra": {
-        "provider": "openai",
-        "model": "gpt-5.6-terra",
+    # Gemini goes through OpenRouter's OpenAI-compatible API. Speeds are first
+    # guesses - tune them once real runs show the ETA is off.
+    "Gemini 4 Argon": {
+        "provider": "openrouter",
+        "model": "google/gemini-4-argon",
         "efforts": FULL_EFFORTS,
         "default_effort": EFFORT_OFF,
-        "speed": 45.0,
+        "speed": 30.0,
+    },
+    "Gemini 3.8 Flash": {
+        "provider": "openrouter",
+        "model": "google/gemini-3.8-flash",
+        "efforts": FULL_EFFORTS,
+        "default_effort": EFFORT_OFF,
+        "speed": 60.0,
     },
 }
 
@@ -524,8 +527,7 @@ def call_model(
         from openai import OpenAI  # type: ignore
         client = OpenAI(api_key=api_key)
         
-        # GPT 5.6 uses "none" as its no-reasoning setting. Models with no configured
-        # effort list (e.g. GPT 5.5) send no reasoning parameter at all.
+        # "none" is the no-reasoning setting for the GPT models listed here.
         request_kwargs = {}
         if effort == EFFORT_OFF:
             request_kwargs["reasoning"] = {"effort": "none"}
@@ -556,6 +558,39 @@ def call_model(
         if not input_tokens: input_tokens = get_token_count_fallback(prompt + "\n" + user_text)
         if not output_tokens: output_tokens = get_token_count_fallback(output_text)
         
+        return output_text.strip(), input_tokens, output_tokens
+
+    if provider == "openrouter":
+        from openai import OpenAI  # type: ignore
+        client = OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
+
+        # OpenRouter's unified reasoning control. Reasoning text comes back in a
+        # separate field, never in message.content, so it can't leak into output.
+        if effort == EFFORT_OFF:
+            reasoning = {"enabled": False}
+        elif api_effort:
+            reasoning = {"effort": api_effort}
+        else:
+            reasoning = None
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": user_text},
+            ],
+            max_tokens=MAX_OUTPUT_LIMIT,
+            extra_body={"reasoning": reasoning} if reasoning else None,
+        )
+
+        output_text = (response.choices[0].message.content or "") if response.choices else ""
+        usage = getattr(response, "usage", None)
+        input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        output_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+
+        if not input_tokens: input_tokens = get_token_count_fallback(prompt + "\n" + user_text)
+        if not output_tokens: output_tokens = get_token_count_fallback(output_text)
+
         return output_text.strip(), input_tokens, output_tokens
 
     raise ValueError(f"Unsupported provider: {provider}")
@@ -790,6 +825,8 @@ if st.session_state.is_translating:
 
             anthropic_key = st.secrets.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
             openai_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+            openrouter_key = st.secrets.get("OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+            api_keys = {"anthropic": anthropic_key, "openai": openai_key, "openrouter": openrouter_key}
 
             # Base throughput comes from the model registry; deeper reasoning
             # slows the wall clock, so scale by the selected effort.
@@ -803,7 +840,7 @@ if st.session_state.is_translating:
             start_time = time.time()
 
             for i, chunk in enumerate(chunks):
-                active_api_key = anthropic_key if model_info["provider"] == "anthropic" else openai_key
+                active_api_key = api_keys.get(model_info["provider"])
                 if not active_api_key:
                     raise RuntimeError(f"Missing API key for {model_info['provider']}.")
 
