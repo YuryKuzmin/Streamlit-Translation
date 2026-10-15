@@ -152,6 +152,9 @@ MODEL_CHOICES = {
     "Claude Sonnet 5.5": {
         "provider": "anthropic",
         "model": "claude-sonnet-5-5",
+        # Sonnet 5.5 rejects {"type": "disabled"}; this is its way of saying "no
+        # thinking". It only thinks between tool calls, and this app uses no tools.
+        "thinking_off": "between_tools",
         "efforts": FULL_EFFORTS,
         "default_effort": EFFORT_OFF,
         "speed": 45.0,
@@ -499,7 +502,11 @@ def call_model(
         # leaks into the translation itself.
         request_kwargs = {}
         if effort == EFFORT_OFF:
-            request_kwargs["thinking"] = {"type": "disabled"}
+            off_type = next(
+                (m.get("thinking_off") for m in MODEL_CHOICES.values() if m["model"] == model),
+                None,
+            ) or "disabled"
+            request_kwargs["thinking"] = {"type": off_type}
         elif api_effort:
             request_kwargs["thinking"] = {"type": "adaptive"}
             request_kwargs["output_config"] = {"effort": api_effort}
